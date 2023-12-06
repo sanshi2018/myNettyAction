@@ -1358,6 +1358,7 @@ public class DefaultChannelPipeline implements ChannelPipeline {
             unsafe.bind(localAddress, promise);
         }
 
+        // HeadContext
         @Override
         public void connect(
                 ChannelHandlerContext ctx,
@@ -1403,7 +1404,9 @@ public class DefaultChannelPipeline implements ChannelPipeline {
 
         @Override
         public void channelRegistered(ChannelHandlerContext ctx) throws Exception {
+            // 1. 这一步是 head 对于 channelRegistered 事件的处理。没有我们要关心的
             invokeHandlerAddedIfNeeded();
+            // 2. 向后传播 Inbound 事件
             ctx.fireChannelRegistered();
         }
 

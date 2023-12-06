@@ -146,6 +146,7 @@ public final class NioEventLoop extends SingleThreadEventLoop {
             throw new NullPointerException("selectStrategy");
         }
         provider = selectorProvider;
+        // 开启 NIO 中最重要的组件：Selector
         final SelectorTuple selectorTuple = openSelector();
         selector = selectorTuple.selector;
         unwrappedSelector = selectorTuple.unwrappedSelector;
@@ -400,12 +401,19 @@ public final class NioEventLoop extends SingleThreadEventLoop {
 
     @Override
     protected void run() {
+        // 代码嵌套在 for 循环中
         for (;;) {
             try {
+                // selectStrategy 终于要派上用场了
+                // 它有两个值，一个是 CONTINUE 一个是 SELECT
+                // 针对这块代码，我们分析一下，如果 taskQueue 不为空，也就是 hasTasks() 返回 true，
+                //         那么执行一次 selectNow()，因为该方法不会阻塞
+                // 如果 hasTasks() 返回 false，那么执行 SelectStrategy.SELECT 分支，进行 select(...)，这块是带阻塞的
                 switch (selectStrategy.calculateStrategy(selectNowSupplier, hasTasks())) {
                     case SelectStrategy.CONTINUE:
                         continue;
                     case SelectStrategy.SELECT:
+                        // 如果 !hasTasks()，那么进到这个 select 分支，这里 select 带阻塞的
                         select(wakenUp.getAndSet(false));
 
                         // 'wakenUp.compareAndSet(false, true)' is always evaluated
@@ -445,19 +453,26 @@ public final class NioEventLoop extends SingleThreadEventLoop {
 
                 cancelledKeys = 0;
                 needsToSelectAgain = false;
+                // 默认地，ioRatio 的值是 50
                 final int ioRatio = this.ioRatio;
                 if (ioRatio == 100) {
+                    // 如果 ioRatio 设置为 100，那么先执行 IO 操作，然后在 finally 块中执行 taskQueue 中的任务
                     try {
+                        // 1. 执行 IO 操作。因为前面 select 以后，可能有些 channel 是需要处理的。
                         processSelectedKeys();
                     } finally {
+                        // 2. 执行非 IO 任务，也就是 taskQueue 中的任务
                         // Ensure we always run tasks.
                         runAllTasks();
                     }
                 } else {
+                    // 如果 ioRatio 不是 100，那么根据 IO 操作耗时，限制非 IO 操作耗时
                     final long ioStartTime = System.nanoTime();
                     try {
+                        // 执行 IO 操作
                         processSelectedKeys();
                     } finally {
+                        // 根据 IO 操作消耗的时间，计算执行非 IO 操作（runAllTasks）可以用多少时间.
                         // Ensure we always run tasks.
                         final long ioTime = System.nanoTime() - ioStartTime;
                         runAllTasks(ioTime * (100 - ioRatio) / ioRatio);
