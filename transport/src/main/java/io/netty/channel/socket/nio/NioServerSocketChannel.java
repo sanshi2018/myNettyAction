@@ -39,6 +39,7 @@ import java.util.List;
 /**
  * A {@link io.netty.channel.socket.ServerSocketChannel} implementation which uses
  * NIO selector based implementation to accept new connections.
+ * NioSocketChannel在构造时，调用了父类AbstractChannel中的构造方法，初始化了一个pipeline.
  */
 public class NioServerSocketChannel extends AbstractNioMessageChannel
                              implements io.netty.channel.socket.ServerSocketChannel {
@@ -136,6 +137,9 @@ public class NioServerSocketChannel extends AbstractNioMessageChannel
         javaChannel().close();
     }
 
+    /**
+     * child其实就是一个NioSocketChannel，它是在NioServerSocketChannel中，当接收到一个新的链接时，创建对象
+     */
     @Override
     protected int doReadMessages(List<Object> buf) throws Exception {
         SocketChannel ch = SocketUtils.accept(javaChannel());

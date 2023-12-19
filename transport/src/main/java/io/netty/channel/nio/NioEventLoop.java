@@ -208,11 +208,19 @@ public final class NioEventLoop extends SingleThreadEventLoop {
 
         final Class<?> selectorImplClass = (Class<?>) maybeSelectorImplClass;
 
+        /**
+         * netty通过反射的方式，把Selector对象内部的selectedKeys和publicSelectedKeys替换为SelectedSelectionKeySet。
+         * 原本的selectedKeys和publicSelectedKeys这两个字段都是HashSet类型，替换之后变成了SelectedSelectionKeySet。
+         * 当有就绪的key时，会直接填充到SelectedSelectionKeySet的数组中。后续只需要遍历即可。
+         * @return
+         */
         Object maybeException = AccessController.doPrivileged(new PrivilegedAction<Object>() {
             @Override
             public Object run() {
                 try {
+                    //Selector内部的selectedKeys字段
                     Field selectedKeysField = selectorImplClass.getDeclaredField("selectedKeys");
+                    //Selector内部的publicSelectedKeys字段
                     Field publicSelectedKeysField = selectorImplClass.getDeclaredField("publicSelectedKeys");
 
                     Throwable cause = ReflectionUtil.trySetAccessible(selectedKeysField, true);
@@ -224,6 +232,7 @@ public final class NioEventLoop extends SingleThreadEventLoop {
                         return cause;
                     }
 
+                    // 将unwrappedSelector的“selectedKeysField” 替换为selectedKeySet
                     selectedKeysField.set(unwrappedSelector, selectedKeySet);
                     publicSelectedKeysField.set(unwrappedSelector, selectedKeySet);
                     return null;
@@ -327,7 +336,7 @@ public final class NioEventLoop extends SingleThreadEventLoop {
      * around the infamous epoll 100% CPU bug.
      */
     public void rebuildSelector() {
-        if (!inEventLoop()) {
+        if (!inEventLoop()) { //如果不是在eventLoop中执行，则使用异步线程执行
             execute(new Runnable() {
                 @Override
                 public void run() {
@@ -339,16 +348,19 @@ public final class NioEventLoop extends SingleThreadEventLoop {
         rebuildSelector0();
     }
 
+    /**
+     * 重新创建一个选择器,替代当前事件循环中的选择器
+     */
     private void rebuildSelector0() {
-        final Selector oldSelector = selector;
-        final SelectorTuple newSelectorTuple;
+        final Selector oldSelector = selector;  //获取老的selector选择器
+        final SelectorTuple newSelectorTuple; //定义新的选择器
 
-        if (oldSelector == null) {
+        if (oldSelector == null) { //如果老的选择器为空，直接返回
             return;
         }
 
         try {
-            newSelectorTuple = openSelector();
+            newSelectorTuple = openSelector();  //创建一个新的选择器
         } catch (Exception e) {
             logger.warn("Failed to create a new Selector.", e);
             return;
@@ -356,17 +368,19 @@ public final class NioEventLoop extends SingleThreadEventLoop {
 
         // Register all channels to the new Selector.
         int nChannels = 0;
-        for (SelectionKey key: oldSelector.keys()) {
+        for (SelectionKey key: oldSelector.keys()) { //遍历注册到选择器的选择key集合
             Object a = key.attachment();
             try {
+                // 如果选择key无效或选择关联的通道已经注册到新的选择器，则跳出当前循环
                 if (!key.isValid() || key.channel().keyFor(newSelectorTuple.unwrappedSelector) != null) {
                     continue;
                 }
-
+                // 获取key的选择关注事件集
                 int interestOps = key.interestOps();
-                key.cancel();
+                key.cancel(); //取消选择key
+                //注册选择key到新的选择器
                 SelectionKey newKey = key.channel().register(newSelectorTuple.unwrappedSelector, interestOps, a);
-                if (a instanceof AbstractNioChannel) {
+                if (a instanceof AbstractNioChannel) { //如果是nio通道，则更新通道的选择key
                     // Update SelectionKey
                     ((AbstractNioChannel) a).selectionKey = newKey;
                 }
@@ -383,7 +397,7 @@ public final class NioEventLoop extends SingleThreadEventLoop {
                 }
             }
         }
-
+        // 更新当前事件循环选择器
         selector = newSelectorTuple.selector;
         unwrappedSelector = newSelectorTuple.unwrappedSelector;
 
@@ -404,6 +418,7 @@ public final class NioEventLoop extends SingleThreadEventLoop {
         // 代码嵌套在 for 循环中
         for (;;) {
             try {
+                System.out.println("Thread: " + Thread.currentThread().getName() +"iD:"+Thread.currentThread().getId() + " is running");
                 // selectStrategy 终于要派上用场了
                 // 它有两个值，一个是 CONTINUE 一个是 SELECT
                 // 针对这块代码，我们分析一下，如果 taskQueue 不为空，也就是 hasTasks() 返回 true，
@@ -455,13 +470,14 @@ public final class NioEventLoop extends SingleThreadEventLoop {
                 needsToSelectAgain = false;
                 // 默认地，ioRatio 的值是 50
                 final int ioRatio = this.ioRatio;
-                if (ioRatio == 100) {
+                if (ioRatio == 100) { //ioRadio执行时间占比是100%，默认是50%
                     // 如果 ioRatio 设置为 100，那么先执行 IO 操作，然后在 finally 块中执行 taskQueue 中的任务
                     try {
                         // 1. 执行 IO 操作。因为前面 select 以后，可能有些 channel 是需要处理的。
-                        processSelectedKeys();
+                        processSelectedKeys(); // //执行就绪SocketChannel的任务
                     } finally {
                         // 2. 执行非 IO 任务，也就是 taskQueue 中的任务
+                        //注意，将ioRatio设置为100，并不代表任务不执行，反而是每次将任务队列执行完
                         // Ensure we always run tasks.
                         runAllTasks();
                     }
@@ -472,9 +488,11 @@ public final class NioEventLoop extends SingleThreadEventLoop {
                         // 执行 IO 操作
                         processSelectedKeys();
                     } finally {
+                        // io事件执行结束时间
                         // 根据 IO 操作消耗的时间，计算执行非 IO 操作（runAllTasks）可以用多少时间.
                         // Ensure we always run tasks.
                         final long ioTime = System.nanoTime() - ioStartTime;
+                        //基于本次循环处理IO的时间，ioRatio，计算出执行任务耗时的上限，也就是只允许处理多长时间异步任务
                         runAllTasks(ioTime * (100 - ioRatio) / ioRatio);
                     }
                 }
@@ -584,14 +602,17 @@ public final class NioEventLoop extends SingleThreadEventLoop {
 
     private void processSelectedKeysOptimized() {
         for (int i = 0; i < selectedKeys.size; ++i) {
+            //1. 取出IO事件以及对应的channel
             final SelectionKey k = selectedKeys.keys[i];
             // null out entry in the array to allow to have it GC'ed once the Channel close
             // See https://github.com/netty/netty/issues/2363
-            selectedKeys.keys[i] = null;
+            selectedKeys.keys[i] = null; //k的引用置null，便于gc回收，也表示该channel的事件处理完成避免重复处理
 
-            final Object a = k.attachment();
-
+            final Object a = k.attachment(); //获取保存在当前channel中的attachment，此时应该是NioServerSocketChannel
+            //处理当前的channel
             if (a instanceof AbstractNioChannel) {
+                //对于boss NioEventLoop，轮询到的基本是连接事件，后续的事情就是通过他的pipeline将连接扔给一个worker NioEventLoop处理
+                //对于worker NioEventLoop来说，轮循道的基本商是IO读写事件，后续的事情就是通过他的pipeline将读取到的字节流传递给每个channelHandler来处理
                 processSelectedKey(k, (AbstractNioChannel) a);
             } else {
                 @SuppressWarnings("unchecked")
@@ -618,13 +639,18 @@ public final class NioEventLoop extends SingleThreadEventLoop {
                 eventLoop = ch.eventLoop();
             } catch (Throwable ignored) {
                 // If the channel implementation throws an exception because there is no event loop, we ignore this
+                // 如果通道实现因为没有事件循环而抛出异常，我们将忽略它。
                 // because we are only trying to determine if ch is registered to this event loop and thus has authority
                 // to close ch.
+                // 因为我们只是试图确定 ch 是否已注册到此事件循环，从而有权关闭 ch。
                 return;
             }
             // Only close ch if ch is still registered to this EventLoop. ch could have deregistered from the event loop
             // and thus the SelectionKey could be cancelled as part of the deregistration process, but the channel is
             // still healthy and should not be closed.
+            // 只有在 ch 仍然注册到此 EventLoop 时才关闭 ch。
+
+            // ch 可能已从事件循环中注销，因此SelectionKey可能作为注销过程的一部分被取消，但通道仍然健康，不应关闭。
             // See https://github.com/netty/netty/issues/5125
             if (eventLoop != this || eventLoop == null) {
                 return;
@@ -635,11 +661,11 @@ public final class NioEventLoop extends SingleThreadEventLoop {
         }
 
         try {
-            int readyOps = k.readyOps();
+            int readyOps = k.readyOps(); //获取当前key所属的操作类型
             // We first need to call finishConnect() before try to trigger a read(...) or write(...) as otherwise
             // the NIO JDK channel implementation may throw a NotYetConnectedException.
-            if ((readyOps & SelectionKey.OP_CONNECT) != 0) {
-                // remove OP_CONNECT as otherwise Selector.select(..) will always return without blocking
+            if ((readyOps & SelectionKey.OP_CONNECT) != 0) {  //如果是连接类型
+                // remove OP_CONNECT as otherwise (不然) Selector.select(..) will always return without blocking
                 // See https://github.com/netty/netty/issues/924
                 int ops = k.interestOps();
                 ops &= ~SelectionKey.OP_CONNECT;
@@ -649,13 +675,16 @@ public final class NioEventLoop extends SingleThreadEventLoop {
             }
 
             // Process OP_WRITE first as we may be able to write some queued buffers and so free memory.
-            if ((readyOps & SelectionKey.OP_WRITE) != 0) {
+            if ((readyOps & SelectionKey.OP_WRITE) != 0) {  //如果是写类型
                 // Call forceFlush which will also take care of clear the OP_WRITE once there is nothing left to write
+                // 调用 forceFlush，一旦没有剩余内容可写，它也会清除 OP_WRITE
                 ch.unsafe().forceFlush();
             }
 
             // Also check for readOps of 0 to workaround possible JDK bug which may otherwise lead
             // to a spin loop
+            // 还检查 readOps 是否为 0，以解决 JDK 可能存在的错误，否则可能导致自旋循环
+            //如果是读类型或者ACCEPT类型。则执行unsafe.read()方法，unsafe的实例对象为 NioMessageUnsafe
             if ((readyOps & (SelectionKey.OP_READ | SelectionKey.OP_ACCEPT)) != 0 || readyOps == 0) {
                 unsafe.read();
             }
@@ -742,7 +771,7 @@ public final class NioEventLoop extends SingleThreadEventLoop {
     private void select(boolean oldWakenUp) throws IOException {
         Selector selector = this.selector;
         try {
-            int selectCnt = 0;
+            int selectCnt = 0; //selectCnt记录的是无功而返的select次数，即eventLoop空转的次数，为解决NIO BUG
             long currentTimeNanos = System.nanoTime();
             long selectDeadLineNanos = currentTimeNanos + delayNanos(currentTimeNanos);
 
@@ -760,13 +789,16 @@ public final class NioEventLoop extends SingleThreadEventLoop {
                 // Selector#wakeup. So we need to check task queue again before executing select operation.
                 // If we don't, the task might be pended until select operation was timed out.
                 // It might be pended until idle timeout if IdleStateHandler existed in pipeline.
+                //ranTasks=true，或strategy>0，说明eventLoop干活了，没有空转，清空selectCnt
                 if (hasTasks() && wakenUp.compareAndSet(false, true)) {
                     selector.selectNow();
                     selectCnt = 1;
                     break;
                 }
-
+                // 2. taskQueue中任务执行完，开始执行select进行阻塞
+                // 下一次定时任务触发截至时间
                 int selectedKeys = selector.select(timeoutMillis);
+
                 selectCnt ++;
 
                 if (selectedKeys != 0 || oldWakenUp || wakenUp.get() || hasTasks() || hasScheduledTasks()) {
@@ -795,7 +827,9 @@ public final class NioEventLoop extends SingleThreadEventLoop {
                 if (time - TimeUnit.MILLISECONDS.toNanos(timeoutMillis) >= currentTimeNanos) {
                     // timeoutMillis elapsed without anything selected.
                     selectCnt = 1;
-                } else if (SELECTOR_AUTO_REBUILD_THRESHOLD > 0 &&
+                }
+                //如果选择重构的阈值大于0， 默认值是512次、 并且当前触发的空轮询次数大于 512次。，则触发重构
+                else if (SELECTOR_AUTO_REBUILD_THRESHOLD > 0 &&
                         selectCnt >= SELECTOR_AUTO_REBUILD_THRESHOLD) {
                     // The selector returned prematurely many times in a row.
                     // Rebuild the selector to work around the problem.

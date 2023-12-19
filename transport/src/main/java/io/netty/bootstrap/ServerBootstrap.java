@@ -44,11 +44,14 @@ public class ServerBootstrap extends AbstractBootstrap<ServerBootstrap, ServerCh
 
     private static final InternalLogger logger = InternalLoggerFactory.getInstance(ServerBootstrap.class);
 
+    // The order in which child ChannelOptions are applied is important they may depend on each other for validation
+    // purposes.
+    //SocketChannel相关的属性配置
     private final Map<ChannelOption<?>, Object> childOptions = new LinkedHashMap<ChannelOption<?>, Object>();
     private final Map<AttributeKey<?>, Object> childAttrs = new LinkedHashMap<AttributeKey<?>, Object>();
-    private final ServerBootstrapConfig config = new ServerBootstrapConfig(this);
-    private volatile EventLoopGroup childGroup;
-    private volatile ChannelHandler childHandler;
+    private final ServerBootstrapConfig config = new ServerBootstrapConfig(this);//配置类
+    private volatile EventLoopGroup childGroup; //工作线程组
+    private volatile ChannelHandler childHandler; //负责SocketChannel的IO处理相关的Handler
 
     public ServerBootstrap() { }
 
@@ -166,15 +169,21 @@ public class ServerBootstrap extends AbstractBootstrap<ServerBootstrap, ServerCh
             currentChildAttrs = childAttrs.entrySet().toArray(newAttrArray(childAttrs.size()));
         }
 
+//        为什么NioServerSocketChannel需要通过ChannelInitializer回调处理器呢？
+//        NioServerSocketChannel在初始化的时候，还没有开始将该Channel注册到Selector对象上，
+//        也就是没办法把ACCEPT事件注册到Selector上，所以事先添加了ChannelInitializer处理器，
+//        等待Channel注册完成后，再向Pipeline中添加ServerBootstrapAcceptor。
         p.addLast(new ChannelInitializer<Channel>() {
             @Override
             public void initChannel(final Channel ch) throws Exception {
                 final ChannelPipeline pipeline = ch.pipeline();
                 ChannelHandler handler = config.handler();
+                // 如果ServerBootstrap.handler添加了处理器，则会把相关处理器添加到该pipeline中，在本次演示的案例中，我们添加了LoggerHandler
                 if (handler != null) {
                     pipeline.addLast(handler);
                 }
 
+                // 异步执行添加了ServerBootstrapAcceptor，从名字来看，它是专门用来接收新的连接处理的。
                 ch.eventLoop().execute(new Runnable() {
                     @Override
                     public void run() {
@@ -238,12 +247,19 @@ public class ServerBootstrap extends AbstractBootstrap<ServerBootstrap, ServerCh
             };
         }
 
+        /**
+         * ServerBootstrapAcceptor是服务端NioServerSocketChannel中的一个特殊处理器，
+         * 该处理器的channelRead事件只会在新连接产生时触发，
+         * 这里通过final Channel child = (Channel) msg;可以直接拿到客户端的链接SocketChannel
+         * @param ctx
+         * @param msg
+         */
         @Override
         @SuppressWarnings("unchecked")
         public void channelRead(ChannelHandlerContext ctx, Object msg) {
             final Channel child = (Channel) msg;
 
-            child.pipeline().addLast(childHandler);
+            child.pipeline().addLast(childHandler); // //在这里，将handler添加到客户端链接的NioSocketChannel的pipeline中
 
             setChannelOptions(child, childOptions, logger);
 
@@ -252,6 +268,8 @@ public class ServerBootstrap extends AbstractBootstrap<ServerBootstrap, ServerCh
             }
 
             try {
+                // 把当前客户端的链接SocketChannel注册到某个Selector中，
+                // 从childGroup选中一个eventLoop分配给这个Channel
                 childGroup.register(child).addListener(new ChannelFutureListener() {
                     @Override
                     public void operationComplete(ChannelFuture future) throws Exception {

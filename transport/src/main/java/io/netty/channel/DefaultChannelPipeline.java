@@ -89,6 +89,10 @@ public class DefaultChannelPipeline implements ChannelPipeline {
      */
     private boolean registered;
 
+    /**
+     * 初始化pipeline, 设置head和tail
+     * @param channel
+     */
     protected DefaultChannelPipeline(Channel channel) {
         this.channel = ObjectUtil.checkNotNull(channel, "channel");
         succeededFuture = new SucceededChannelFuture(channel, null);
@@ -201,14 +205,20 @@ public class DefaultChannelPipeline implements ChannelPipeline {
         return addLast(null, name, handler);
     }
 
+    /**
+     * 把服务端配置的ChannelHandler，添加到pipeline中，
+     * 注意，此时的pipeline中保存的是ChannelInitializer回调方法。
+     */
     @Override
     public final ChannelPipeline addLast(EventExecutorGroup group, String name, ChannelHandler handler) {
         final AbstractChannelHandlerContext newCtx;
         synchronized (this) {
+            // 检查是否有重复的handler
             checkMultiplicity(handler);
-
+            // 创建新的DefaultChannelHandlerContext节点
             newCtx = newContext(group, filterName(name, handler), handler);
 
+            //添加新的DefaultChannelHandlerContext到ChannelPipeline
             addLast0(newCtx);
 
             // If the registered is false it means that the channel was not registered on an eventloop yet.
@@ -402,6 +412,7 @@ public class DefaultChannelPipeline implements ChannelPipeline {
             throw new NullPointerException("handlers");
         }
 
+        // 遍历handlers列表，此时这里的handler是ChannelInitializer回调方法
         for (ChannelHandler h: handlers) {
             if (h == null) {
                 break;

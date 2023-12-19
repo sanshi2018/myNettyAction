@@ -48,13 +48,25 @@ import java.util.Map;
  * transports such as datagram (UDP).</p>
  */
 public abstract class AbstractBootstrap<B extends AbstractBootstrap<B, C>, C extends Channel> implements Cloneable {
-
+    /**
+     * 这里的EventLoopGroup 作为服务端 Acceptor 线程，负责处理客户端的请求接入
+     * 作为客户端 Connector 线程，负责注册监听连接操作位，用于判断异步连接结果。
+     */
     volatile EventLoopGroup group;
     @SuppressWarnings("deprecation")
-    private volatile ChannelFactory<? extends C> channelFactory;
-    private volatile SocketAddress localAddress;
+    private volatile ChannelFactory<? extends C> channelFactory;//channel工厂，很明显应该是用来制造对应Channel的
+    private volatile SocketAddress localAddress;//SocketAddress用来绑定一个服务端地址
+
+    // The order in which ChannelOptions are applied is important they may depend on each other for validation
+    // purposes.
+    /**
+     * ChannelOption 可以添加Channer 添加一些配置信息
+     */
     private final Map<ChannelOption<?>, Object> options = new LinkedHashMap<ChannelOption<?>, Object>();
     private final Map<AttributeKey<?>, Object> attrs = new LinkedHashMap<AttributeKey<?>, Object>();
+    /**
+     *  ChannelHandler 是具体怎么处理Channer 的IO事件。
+     */
     private volatile ChannelHandler handler;
 
     AbstractBootstrap() {
@@ -279,8 +291,10 @@ public abstract class AbstractBootstrap<B extends AbstractBootstrap<B, C>, C ext
     }
 
     private ChannelFuture doBind(final SocketAddress localAddress) {
+        // initAndRegister 初始化并注册Channel，并返回一个ChannelFuture，说明初始化注册Channel是异步实现
         final ChannelFuture regFuture = initAndRegister();
         final Channel channel = regFuture.channel();
+        // initAndRegister 初始化并注册Channel，并返回一个ChannelFuture，说明初始化注册Channel是异步实现
         if (regFuture.cause() != null) {
             return regFuture;
         }
@@ -330,6 +344,7 @@ public abstract class AbstractBootstrap<B extends AbstractBootstrap<B, C>, C ext
             return new DefaultChannelPromise(new FailedChannel(), GlobalEventExecutor.INSTANCE).setFailure(t);
         }
 
+        //这个代码应该和我们猜想是一致的，就是将当前初始化的channel注册到selector上，这个过程同样也是异步的
         ChannelFuture regFuture = config().group().register(channel);
         if (regFuture.cause() != null) {
             if (channel.isRegistered()) {

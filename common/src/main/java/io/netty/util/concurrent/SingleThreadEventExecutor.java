@@ -272,6 +272,9 @@ public abstract class SingleThreadEventExecutor extends AbstractScheduledEventEx
         }
     }
 
+    /**
+     * 拿出已经就绪的定时任务，放到普通任务队列中
+     */
     private boolean fetchFromScheduledTaskQueue() {
         long nanoTime = AbstractScheduledEventExecutor.nanoTime();
         Runnable scheduledTask  = pollScheduledTask(nanoTime);
@@ -392,6 +395,7 @@ public abstract class SingleThreadEventExecutor extends AbstractScheduledEventEx
      * the tasks in the task queue and returns if it ran longer than {@code timeoutNanos}.
      */
     protected boolean runAllTasks(long timeoutNanos) {
+        // 合并定时任务到普通任务队列
         fetchFromScheduledTaskQueue();
         Runnable task = pollTask();
         if (task == null) {
@@ -418,11 +422,12 @@ public abstract class SingleThreadEventExecutor extends AbstractScheduledEventEx
 
             task = pollTask();
             if (task == null) {
+                //如果任务全部执行完成，记录执行完完成时间
                 lastExecutionTime = ScheduledFutureTask.nanoTime();
                 break;
             }
         }
-
+        //执行收尾任务
         afterRunningAllTasks();
         this.lastExecutionTime = lastExecutionTime;
         return true;

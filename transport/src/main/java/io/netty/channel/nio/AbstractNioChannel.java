@@ -83,9 +83,9 @@ public abstract class AbstractNioChannel extends AbstractChannel {
     protected AbstractNioChannel(Channel parent, SelectableChannel ch, int readInterestOp) {
         super(parent);
         this.ch = ch;
-        this.readInterestOp = readInterestOp;
+        this.readInterestOp = readInterestOp; //设置关心事件，此时是一个连接事件，所以是OP_ACCEPT
         try {
-            ch.configureBlocking(false);
+            ch.configureBlocking(false); //设置非阻塞
         } catch (IOException e) {
             try {
                 ch.close();
