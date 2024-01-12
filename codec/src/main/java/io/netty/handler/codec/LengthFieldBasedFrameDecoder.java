@@ -187,6 +187,9 @@ public class LengthFieldBasedFrameDecoder extends ByteToMessageDecoder {
     private final int maxFrameLength;
     private final int lengthFieldOffset;
     private final int lengthFieldLength;
+    /**
+     * lengthFieldEndOffset = lengthFieldOffset + lengthFieldLength
+     */
     private final int lengthFieldEndOffset;
     private final int lengthAdjustment;
     private final int initialBytesToStrip;
@@ -346,10 +349,18 @@ public class LengthFieldBasedFrameDecoder extends ByteToMessageDecoder {
         }
     }
 
+    /**
+     * #1: 帧过长，上次数据还没丢完，还有后续的数据没发送过来，这里继续丢弃
+     * @see this#exceededFrameLength(ByteBuf, long)
+     * @param in
+     */
     private void discardingTooLongFrame(ByteBuf in) {
+        // 亏欠bytesToDiscard个数据
         long bytesToDiscard = this.bytesToDiscard;
         int localBytesToDiscard = (int) Math.min(bytesToDiscard, in.readableBytes());
+        // 接着丢
         in.skipBytes(localBytesToDiscard);
+        // 再算算还差多少
         bytesToDiscard -= localBytesToDiscard;
         this.bytesToDiscard = bytesToDiscard;
 
@@ -371,17 +382,30 @@ public class LengthFieldBasedFrameDecoder extends ByteToMessageDecoder {
               "than lengthFieldEndOffset: " + lengthFieldEndOffset);
     }
 
+    /**
+     * frameLength大于了maxFrameLength,那么需要无视这个帧,把这些数据直接跳过.
+     * @param in           the {@link ByteBuf} to read from
+     * @param frameLength the length of the frame which was too large
+     */
     private void exceededFrameLength(ByteBuf in, long frameLength) {
         long discard = frameLength - in.readableBytes();
         tooLongFrameLength = frameLength;
 
+        // 说明frameLength < in.readableBytes() 也就是说现在已经读取到的数据
+        // 足够跳过一个完整的帧长度frameLength
         if (discard < 0) {
             // buffer contains more bytes then the frameLength so we can discard all now
             in.skipBytes((int) frameLength);
         } else {
+            // #1: 帧过长，还有后续的数据没发送过来，这里先丢弃已经读取的数据，来不及丢的先记住，下次再丢
+            // 说明frameLength > in.readableBytes()
+            // 也就是说目前已经读取到的数据还不够跳过
             // Enter the discard mode and discard everything received so far.
             discardingTooLongFrame = true;
+            // 还有discard这么多数据需要跳过,只是目前没有这么多数据了,
+            // 等到下次读取到数据,再从里面拿出来discard个数据再跳过
             bytesToDiscard = discard;
+            // 那么先把已经读取的数据跳过
             in.skipBytes(in.readableBytes());
         }
         failIfNecessary(true);
@@ -398,7 +422,7 @@ public class LengthFieldBasedFrameDecoder extends ByteToMessageDecoder {
 
     /**
      * Create a frame out of the {@link ByteBuf} and return it.
-     *
+     * @link https://blog.csdn.net/qq_45859054/article/details/114107844
      * @param   ctx             the {@link ChannelHandlerContext} which this {@link ByteToMessageDecoder} belongs to
      * @param   in              the {@link ByteBuf} from which to read data
      * @return  frame           the {@link ByteBuf} which represent the frame or {@code null} if no frame could
@@ -409,23 +433,36 @@ public class LengthFieldBasedFrameDecoder extends ByteToMessageDecoder {
             discardingTooLongFrame(in);
         }
 
+        // lengthFieldEndOffset = lengthFieldOffset + lengthFieldLength
+        // in.readableBytes()表示可读的数据
         if (in.readableBytes() < lengthFieldEndOffset) {
             return null;
         }
 
+        // 由于每读取一个帧数据, readerIndex就会增长一个帧的长度.
+        // 所以在读取,当前帧的时候, 当前帧在整个数据串的偏移量是in.readerIndex() + lengthFieldOffset
         int actualLengthFieldOffset = in.readerIndex() + lengthFieldOffset;
+
+        // 从实际偏移量的位置(即actualLengthFieldOffset)读取lengthFieldLength长度的数据
+        // 表示content后续占多长度
         long frameLength = getUnadjustedFrameLength(in, actualLengthFieldOffset, lengthFieldLength, byteOrder);
+
+        // 上面两行代码的含义是: 从整个数据串的可读位置向后
+        // 偏移lengthFieldOffset的长度后再读取lengthFieldLength长度的数据作为frameLength
 
         if (frameLength < 0) {
             failOnNegativeLengthField(in, frameLength, lengthFieldEndOffset);
         }
 
+        // 即 frameLength = frameLength + lengthAdjustment + lengthFieldEndOffset;
+        // 表示一个帧的长度
         frameLength += lengthAdjustment + lengthFieldEndOffset;
 
         if (frameLength < lengthFieldEndOffset) {
             failOnFrameLengthLessThanLengthFieldEndOffset(in, frameLength, lengthFieldEndOffset);
         }
 
+        // 如果整个帧的长度大于我们设置的最大长度
         if (frameLength > maxFrameLength) {
             exceededFrameLength(in, frameLength);
             return null;
@@ -433,15 +470,20 @@ public class LengthFieldBasedFrameDecoder extends ByteToMessageDecoder {
 
         // never overflows because it's less than maxFrameLength
         int frameLengthInt = (int) frameLength;
+        // 如果可读的数据小于一个帧的长度,说明这个帧还没读完,返回null
         if (in.readableBytes() < frameLengthInt) {
             return null;
         }
 
+        // 比如读取帧的长度是100个字节,可是你让我去除105个字节
+        // 说白了,还是这个帧不合法
         if (initialBytesToStrip > frameLengthInt) {
             failOnFrameLengthLessThanInitialBytesToStrip(in, frameLength, initialBytesToStrip);
         }
+        // 跳过指定长度
         in.skipBytes(initialBytesToStrip);
 
+        // 正常提取一个帧的数据
         // extract frame
         int readerIndex = in.readerIndex();
         int actualFrameLength = frameLengthInt - initialBytesToStrip;
